@@ -15,7 +15,7 @@ void StockMaster::HandlePosition(int64_t timestamp, string code, int64_t long_vo
 void StockMaster::InitPosition(string code,int64_t long_volume, int64_t long_can_close) {
     InnerPositionPtr pos = std::make_shared<InnerPosition>(code);
     pos->long_volume_ = long_volume;
-    pos->long_can_close_ = long_can_close;
+    pos->pre_volume_ = long_can_close;
     positions_.insert(std::make_pair(code, pos));
     LOG_INFO << "初始化持仓";
 }
@@ -25,22 +25,20 @@ void StockMaster::ComparePosition(int64_t timestamp, string code, int64_t long_v
     if (it == positions_.end()) {
         EXPECT_TRUE(false) << "找不到持仓, " << code;
     }
-//    EXPECT_EQ(it->second->long_volume_, long_volume);
-//    EXPECT_EQ(it->second->long_can_close_, long_can_close);
     int64_t stamp = timestamp % 1000000000LL;
     if (stamp < 150000000) {
         if (it->second->long_volume_ != long_volume) {
             LOG_WARN << code << ", long_volume, StockMaster持仓: " << it->second->long_volume_ << ", 查询: " << long_volume;
         }
-        if (it->second->long_can_close_ != long_can_close) {
-            LOG_WARN << code << ", long_can_close, StockMaster持仓: " << it->second->long_can_close_ << ", 查询: " << long_can_close;
+        if (it->second->CalculateAvailableVolume() != long_can_close) {
+            LOG_WARN << code << ", long_can_close, StockMaster持仓: " << it->second->CalculateAvailableVolume() << ", 查询: " << long_can_close;
         }
     } else {
         if (it->second->long_volume_ != long_volume) {
             LOG_ERROR << code << ", long_volume, StockMaster持仓: " << it->second->long_volume_ << ", 查询: " << long_volume;
         }
-        if (it->second->long_can_close_ != long_can_close) {
-            LOG_ERROR << code << ", long_can_close, StockMaster持仓: " << it->second->long_can_close_ << ", 查询: " << long_can_close;
+        if (it->second->CalculateAvailableVolume() != long_can_close) {
+            LOG_ERROR << code << ", long_can_close, StockMaster持仓: " << it->second->CalculateAvailableVolume() << ", 查询: " << long_can_close;
         }
     }
 }
@@ -66,7 +64,15 @@ void StockMaster::HandleOrderRep(const co::fbs::TradeOrderT& order) {
             positions_.insert(std::make_pair(order.code, pos));
         }
         if (order.bs_flag == kBsFlagSell) {
-            pos->long_can_close_ -= order.volume;
+            if (pos->cr_volume_ >= order.volume) {
+                order_volume_.insert(std::make_pair(order.order_no, std::make_pair(0, order.volume)));
+                pos->cr_volume_ -= order.volume;
+            } else {
+                int64_t freeze_pre_volume = order.volume - pos->cr_volume_;
+                order_volume_.insert(std::make_pair(order.order_no, std::make_pair(freeze_pre_volume, pos->cr_volume_)));
+                pos->pre_volume_ -= freeze_pre_volume;
+                pos->cr_volume_ = 0;
+            }
         }
         // 处理成交先到，响应后到的情况
         if (auto iter = knock_first_orders_.find(order.order_no); iter != knock_first_orders_.end()) {
@@ -123,47 +129,69 @@ void StockMaster::HandleKnock(co::fbs::TradeKnockT& knock) {
     if (knock.match_type == co::kMatchTypeOK) {
         if (knock.bs_flag == kBsFlagBuy) {
             pos->long_volume_ += knock.match_volume;
+            // T0的合约，没有buy_volume, 默认是昨仓, 方便处理
             if (IsT0Code(knock.code)) {
-                pos->long_can_close_ += knock.match_volume;
+                pos->pre_volume_ += knock.match_volume;
+            } else {
+                pos->buy_volume_ += knock.match_volume;
             }
         } else if (knock.bs_flag == kBsFlagSell) {
             pos->long_volume_ -= knock.match_volume;
         } else if (knock.bs_flag == kBsFlagCreate) {
             if (knock.code[0] == '1' || knock.code[0] == '5') {
-                pos->long_can_close_ += knock.match_volume;
+                pos->cr_volume_ += knock.match_volume;
                 pos->long_volume_ += knock.match_volume;
             } else {
-                int64_t not_can_close = pos->long_volume_ - pos->long_can_close_;
                 pos->long_volume_ -= knock.match_volume;
-                if (not_can_close < knock.match_volume) {
-                    pos->long_can_close_ -= (knock.match_volume - not_can_close);
+                // 申购减股，先扣今持仓，再扣昨持仓
+                if (pos->buy_volume_ >= knock.match_volume) {
+                    pos->buy_volume_ -= knock.match_volume;
+                } else {
+                    pos->pre_volume_ -= (knock.match_volume - pos->buy_volume_);
+                    pos->buy_volume_ = 0;
                 }
             }
         } else if (knock.bs_flag == kBsFlagRedeem) {
             if (knock.code[0] == '1' || knock.code[0] == '5') {
-                int64_t not_can_close = pos->long_volume_ - pos->long_can_close_;
                 pos->long_volume_ -= knock.match_volume;
-                if (not_can_close < knock.match_volume) {
-                    pos->long_can_close_ -= (knock.match_volume - not_can_close);
+                // 赎回减股，先扣今持仓，再扣昨持仓
+                if (pos->buy_volume_ >= knock.match_volume) {
+                    pos->buy_volume_ -= knock.match_volume;
+                } else {
+                    pos->pre_volume_ -= (knock.match_volume - pos->buy_volume_);
+                    pos->buy_volume_ = 0;
                 }
             } else {
-                pos->long_can_close_ += knock.match_volume;
+                pos->cr_volume_ += knock.match_volume;
                 pos->long_volume_ += knock.match_volume;
             }
         }
-        if (knock.match_price > 0) {
-            pos->price_ = knock.match_price;
-        }
     } else {
         if (knock.bs_flag == kBsFlagSell) {
-            pos->long_can_close_ += knock.match_volume;
+            auto it = order_volume_.find(knock.order_no);
+            if (it != order_volume_.end()) {
+                if (knock.match_volume == (it->second.first + it->second.second)) {
+                    pos->pre_volume_ += it->second.first;
+                    pos->cr_volume_ += it->second.second;
+                } else {
+                    // 部成部撤, 先卖申赎的持仓，再卖昨持仓
+                    int64_t traded_volume = it->second.first + it->second.second - knock.match_volume;
+                    if (traded_volume <= it->second.second) {
+                        pos->pre_volume_ += it->second.first;
+                        pos->cr_volume_ += it->second.second - traded_volume;
+                    } else {
+                        pos->pre_volume_ += it->second.first - (traded_volume - it->second.second);
+                        pos->cr_volume_ += 0;
+                    }
+                }
+            }
         }
     }
     pos->ToString();
 }
 
-// 可转债	T+0	123...， 110...	可以当天无限次买卖
-// 跨境/商品ETF	T+0	513...， 518...	主要跟踪境外指数或大宗商品
+// 可转债	123...， 110...
+// 跨境/商品ETF	513...， 518...	主要跟踪境外指数或大宗商品
 bool StockMaster::IsT0Code(string code) {
     if (x::StartsWith(code, "123")) {
         return true;
