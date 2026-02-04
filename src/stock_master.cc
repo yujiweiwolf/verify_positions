@@ -16,6 +16,7 @@ void StockMaster::InitPosition(string code,int64_t long_volume, int64_t long_can
     InnerPositionPtr pos = std::make_shared<InnerPosition>(code);
     pos->long_volume_ = long_volume;
     pos->pre_volume_ = long_can_close;
+    pos->buy_volume_ = (long_volume - long_can_close);
     positions_.insert(std::make_pair(code, pos));
     LOG_INFO << "初始化持仓";
 }
