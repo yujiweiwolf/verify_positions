@@ -127,6 +127,7 @@ void StockMaster::HandleKnock(co::fbs::TradeKnockT& knock) {
         positions_.insert(std::make_pair(knock.code, pos));
     }
     if (knock.match_type == co::kMatchTypeOK) {
+        pos->price_ = knock.match_price;
         if (knock.bs_flag == kBsFlagBuy) {
             pos->long_volume_ += knock.match_volume;
             // T0的合约，没有buy_volume, 默认是昨仓, 方便处理

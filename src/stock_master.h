@@ -17,6 +17,7 @@ struct InnerPosition {
     int64_t pre_volume_ = 0;  // 昨仓
     int64_t buy_volume_ = 0;  // 今仓
     int64_t cr_volume_ = 0;   // 申赎得到的持仓
+    double price_ = 0;        // 通过成交回报里的match_price或者查询持仓更新
 
     int64_t CalculateAvailableVolume() {
         return (pre_volume_ + cr_volume_);
@@ -27,7 +28,8 @@ struct InnerPosition {
                  << ", long_can_close: " << CalculateAvailableVolume()
                  << ", pre_volume: " << pre_volume_
                  << ", buy_volume: " << buy_volume_
-                 << ", cr_volume: " << cr_volume_;
+                 << ", cr_volume: " << cr_volume_
+                 << ", price_: " << price_;
     }
 };
 typedef std::shared_ptr<InnerPosition> InnerPositionPtr;
