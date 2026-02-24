@@ -23,13 +23,14 @@ struct InnerPosition {
         return (pre_volume_ + cr_volume_);
     }
 
-    void ToString() {
+    void ToString(const string& txt = "") {
         LOG_INFO << "StockMaster持仓, "  << code_ << ", long_volume: " << long_volume_
                  << ", long_can_close: " << CalculateAvailableVolume()
                  << ", pre_volume: " << pre_volume_
                  << ", buy_volume: " << buy_volume_
                  << ", cr_volume: " << cr_volume_
-                 << ", price_: " << price_;
+                 << ", price: " << price_
+                 << ", " << txt;
     }
 };
 typedef std::shared_ptr<InnerPosition> InnerPositionPtr;

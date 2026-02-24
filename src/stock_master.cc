@@ -55,7 +55,10 @@ void StockMaster::HandleOrderRep(const co::fbs::TradeOrderT& order) {
         if (auto it = inner_order_no_.find(order.order_no); it != inner_order_no_.end()) {
             return;
         }
-        inner_order_no_.insert(order.order_no);
+        auto [iter, success] = inner_order_no_.insert(order.order_no);
+        if (!success) {
+            LOG_ERROR << "插入失败, order_no: " << order.order_no;
+        }
         InnerPositionPtr pos;
         auto it = positions_.find(order.code);
         if (it != positions_.end()) {
@@ -82,17 +85,20 @@ void StockMaster::HandleOrderRep(const co::fbs::TradeOrderT& order) {
             }
         }
         // 申赎根据成交回报处理
-        pos->ToString();
+        char txt[1024] = "";
+        sprintf(txt, "报单更新持仓, 报单信息 bs_flag: %ld, volume: %ld, order_no: %s", order.bs_flag, order.volume, order.order_no.c_str());
+        pos->ToString(txt);
     }
 }
 
 void StockMaster::HandleKnock(co::fbs::TradeKnockT& knock) {
-    if (knock.order_no.empty() || knock.match_no.empty() || knock.code.empty()) {
+    if (knock.code.compare("204001.SH") == 0 || knock.code.compare("131800.SZ") == 0) {
         return;
     }
-    if (knock.match_volume <= 0) {
+    if (knock.order_no.empty() || knock.match_no.empty() || knock.code.empty() || knock.match_volume <= 0) {
         return;
     }
+    std::unique_lock<std::mutex> lock(pos_mutex_);
     if (auto it = inner_order_no_.find(knock.order_no); it == inner_order_no_.end()) {
         auto iter = knock_first_orders_.find(knock.order_no);
         if (iter == knock_first_orders_.end()) {
@@ -113,11 +119,7 @@ void StockMaster::HandleKnock(co::fbs::TradeKnockT& knock) {
     if (auto it = inner_match_no_.find(knock.match_no); it != inner_match_no_.end()) {
         return;
     }
-    if (knock.code.compare("204001.SH") == 0 || knock.code.compare("131800.SZ") == 0) {
-        return;
-    }
 
-    std::unique_lock<std::mutex> lock(pos_mutex_);
     inner_match_no_.insert(knock.match_no);
     InnerPositionPtr pos;
     auto it = positions_.find(knock.code);
@@ -189,7 +191,10 @@ void StockMaster::HandleKnock(co::fbs::TradeKnockT& knock) {
             }
         }
     }
-    pos->ToString();
+    char txt[1024] = "";
+    sprintf(txt, "成交更新持仓, 成交信息 bs_flag: %ld, match_volume: %ld, match_type: %ld, order_no: %s , match_no: %s",
+            knock.bs_flag, knock.match_volume, knock.match_type, knock.order_no.c_str(), knock.match_no.c_str());
+    pos->ToString(txt);
 }
 
 // 可转债	123...， 110...
